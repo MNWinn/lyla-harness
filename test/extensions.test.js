@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ExtensionHost, installExtension, manageExtension, listExtensions } from '../src/extensions.js';
@@ -56,8 +56,8 @@ test('CLI extension command runs offline with cwd and no configured provider', a
   const { root, source } = await fixture(`export function activate(host) { host.registerCommand('fixture', (args,ctx) => host.report(JSON.stringify({args,cwd:ctx.cwd,provider:ctx.provider}))); }`);
   await installExtension(source, { root });
   // The normal registry is <config>/extensions.
-  const { rename } = await import('node:fs/promises');
-  const config = join(root, '..', 'config'); await mkdir(config); await rename(root, join(config,'extensions'));
+  const { symlink } = await import('node:fs/promises');
+  const config = join(root, '..', 'config'); await mkdir(config); await symlink(root, join(config,'extensions'));
   const { stdout } = await promisify(execFile)(process.execPath, ['src/cli.js','fixture','hello','--cwd',source], { cwd:process.cwd(),env:{...process.env,LYLA_CONFIG_DIR:config} });
-  assert.deepEqual(JSON.parse(stdout), {args:['hello'],cwd:source});
+  assert.deepEqual(JSON.parse(stdout), {args:['hello'],cwd:await realpath(source)});
 });
