@@ -9,6 +9,19 @@ agent loop and adapters; it does not wrap Pi or depend on its packages.
 
 ## Run
 
+Install the terminal command once from this directory:
+
+```sh
+npm link
+lyla
+```
+
+On first launch, Lyla asks for a provider and model, saves those settings to
+`~/.config/lyla/config.json`, and opens chat if credentials are available. Choose
+offline demo to try the interface without an account. Run `lyla setup` to change
+defaults later. API keys stay in environment variables; setup never saves them.
+`LYLA_CONFIG_DIR` overrides the settings directory.
+
 From this directory:
 
 ```sh
@@ -46,8 +59,7 @@ node src/cli.js --provider openai --model YOUR_MODEL_ID \
 node src/cli.js --demo --json -p "Hello"
 ```
 
-Use `npm link` if you want an optional global `lyla` command. No package
-installation is needed to run from source. `LYLA_PROVIDER`, `LYLA_MODEL`, and
+No package installation is needed to run from source. `LYLA_PROVIDER`, `LYLA_MODEL`, and
 `LYLA_BASE_URL` can supply defaults instead of command-line flags.
 
 ## Inside a session

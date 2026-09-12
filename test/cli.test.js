@@ -6,12 +6,14 @@ import { mkdtemp, readFile, rm, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { saveConfig } from '../src/config.js';
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
-const env = { ...process.env, LYLA_PROVIDER: '', LYLA_MODEL: '', LYLA_BASE_URL: '', OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '', OPENAI_COMPATIBLE_API_KEY: '' };
+const env = { ...process.env, LYLA_CONFIG_DIR: join(tmpdir(), `lyla-unused-${randomUUID()}`), LYLA_PROVIDER: '', LYLA_MODEL: '', LYLA_BASE_URL: '', OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '', OPENAI_COMPATIBLE_API_KEY: '' };
 async function directory(t) { const dir = await realpath(await mkdtemp(join(tmpdir(), 'lyla-cli-'))); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
-function run(args, entry = cli) {
+function run(args, entry = cli, overrides = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [entry, ...args], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [entry, ...args], { env: { ...env, ...overrides }, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('CLI timeout')); }, 10000);
     child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
@@ -83,4 +85,16 @@ test('CLI works through an npm-style executable symlink', async t => {
   const cwd = await directory(t); const link = join(cwd, 'lyla'); await symlink(cli, link);
   const result = await run(['--help'], link);
   assert.equal(result.code, 0); assert.match(result.stdout, /Usage:/);
+});
+
+test('CLI uses saved defaults and rejects noninteractive setup', async t => {
+  const cwd = await directory(t);
+  const configDir = join(cwd, 'config');
+  await saveConfig({ provider: 'demo', model: 'saved-model' }, join(configDir, 'config.json'));
+  const result = await run(['--cwd', cwd, '--json', '-p', 'Hello'], cli, { LYLA_CONFIG_DIR: configDir });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(events(result)[0].model, 'saved-model');
+  const rejected = await run(['setup']);
+  assert.equal(rejected.code, 1);
+  assert.match(rejected.stderr, /interactive terminal/);
 });

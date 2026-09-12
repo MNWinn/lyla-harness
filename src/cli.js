@@ -8,10 +8,13 @@ import { createProvider } from './providers.js';
 import { createTools } from './tools.js';
 import { Session, recoverInterruptedCalls } from './session.js';
 import { loadContext } from './context.js';
+import { loadConfig, setup } from './config.js';
 
 const HELP = `Lyla — a small, model-agnostic coding harness
 
 Usage:
+  lyla                  Start chat, or first-run setup if unconfigured
+  lyla setup            Choose and save a default provider/model
   lyla --demo -p "Hello"
   lyla --provider openai --model <model-id>
   lyla --provider anthropic --model <model-id> -p "Explain this project"
@@ -40,6 +43,7 @@ Interactive commands:
 
 Environment: LYLA_PROVIDER, LYLA_MODEL, LYLA_BASE_URL; provider API keys
 OPENAI_API_KEY, ANTHROPIC_API_KEY, or OPENAI_COMPATIBLE_API_KEY.
+Settings: ~/.config/lyla/config.json (override directory: LYLA_CONFIG_DIR).
 
 Tools read, write, edit, and run shell commands with your user permissions.
 Use a trusted working directory or an external sandbox. Journals contain prompts,
@@ -65,11 +69,29 @@ export function parseArgs(argv) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
+  if (argv[0] === 'setup') {
+    if (argv.length !== 1) throw new Error('Usage: lyla setup');
+    if (!process.stdin.isTTY) throw new Error('Run lyla setup in an interactive terminal.');
+    await setup();
+    return;
+  }
   const options = parseArgs(argv);
   if (options.help) { process.stdout.write(HELP); return; }
   options.provider ??= process.env.LYLA_PROVIDER || undefined;
   options.model ??= process.env.LYLA_MODEL || undefined;
   options.baseUrl ??= process.env.LYLA_BASE_URL || undefined;
+  // Explicit provider selection is isolated from unrelated saved defaults.
+  let defaults = options.demo || options.provider || options.resume ? {} : await loadConfig();
+  if (!options.demo && !options.provider && !options.resume && !defaults.provider && process.stdin.isTTY && !options.json && options.prompt === undefined) {
+    const configured = await setup();
+    if (!configured.ready) return;
+    defaults = configured.config;
+  }
+  if (!options.provider && !options.resume) {
+    options.provider = defaults.provider;
+    options.model ??= defaults.model;
+    options.baseUrl ??= defaults.baseUrl;
+  }
   const cwd = await realpath(resolve(options.cwd));
   const directory = resolve(options.sessionDir ?? resolve(cwd, '.lyla/sessions'));
   let session;
