@@ -1,7 +1,7 @@
 /** A bounded, provider-independent tool loop. Event callbacks are awaited. */
 export class Agent {
   #running = false;
-  constructor({ provider, tools = [], system = '', cwd = process.cwd(), messages = [], maxSteps = 20, onEvent = async () => {} }) {
+  constructor({ provider, tools = [], system = '', cwd = process.cwd(), messages = [], maxSteps = 20, onEvent = async () => {}, beforeRun = async () => {}, beforeRequest = async () => '' }) {
     if (!Number.isInteger(maxSteps) || maxSteps < 1) throw new Error('maxSteps must be a positive integer');
     this.tools = new Map();
     for (const tool of tools) {
@@ -13,6 +13,7 @@ export class Agent {
     this.messages = structuredClone(messages);
     this.maxSteps = maxSteps;
     this.onEvent = onEvent;
+    this.beforeRun = beforeRun; this.beforeRequest = beforeRequest;
     this.setProvider(provider);
   }
   setProvider(provider) {
@@ -32,12 +33,15 @@ export class Agent {
     let pending = [];
     let result;
     try {
+      await this.beforeRun(Object.freeze({ prompt }));
       await this.#emit({ type: 'run_start', provider: this.provider.id, model: this.provider.model });
       await this.#message({ role: 'user', content: prompt });
       for (let step = 0; step < this.maxSteps; step++) {
         if (signal?.aborted) { result = { status: 'cancelled' }; break; }
+        const contribution = await this.beforeRequest(Object.freeze({ prompt, requestIndex: step, injectionScope: 'model-request' }));
+        if (typeof contribution !== 'string') throw new Error('beforeRequest must return text');
         const completion = await this.provider.complete({
-          system: this.system,
+          system: [this.system, contribution].filter(Boolean).join('\n\n'),
           messages: structuredClone(this.messages),
           tools: structuredClone([...this.tools.values()].map(({ name, description, parameters }) => ({ name, description, parameters }))),
           signal,

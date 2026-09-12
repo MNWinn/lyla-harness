@@ -192,11 +192,31 @@ tools. `onEvent` is awaited: a failed evidence sink prevents subsequent tool
 execution. For persistence, construct/resume a `Session`, pass its `messages`
 into the agent, and use `event => session.append(event)` as the sink.
 
+## Install extensions
+
+Extensions use a small versioned contract; evaluation policy stays outside the harness.
+
+```sh
+lyla install local:/absolute/path/to/extension
+lyla install npm:@owner/package@0.1.0
+lyla extensions list
+lyla extensions disable EXTENSION_ID
+lyla extensions enable EXTENSION_ID
+lyla extensions update EXTENSION_ID
+lyla extensions remove EXTENSION_ID
+```
+
+Local installation copies package files without downloading dependencies. Npm
+installation disables install scripts and records an exact version and integrity.
+Installing executable extension code does not activate guidance it produces.
+Disable and removal preserve extension data. See [extension contract v1](docs/extensions.md)
+for lifecycle, permissions, context injection, attribution and cancellation.
+
 ## Current limits
 
 This is a tested foundation, not feature parity with Pi. Responses are currently
 non-streaming. There is no automatic context compaction, visual TUI,
-MCP client, browser integration, plugin loader, or automatic skill discovery.
+MCP client, browser integration, or automatic skill discovery.
 Long sessions eventually need `/new` or may exceed a model's context window.
 
 There is **no automatic learning or evaluation promotion yet**. The intended next

@@ -4,3 +4,5 @@ export { createTools } from './tools.js';
 export { Session, readEvents, recoverInterruptedCalls } from './session.js';
 export { loadContext, DEFAULT_SYSTEM } from './context.js';
 export { CodexAgent, loginCodex, codexLoginStatus } from './codex.js';
+
+export { ExtensionHost, installExtension, manageExtension, listExtensions, EXTENSION_CONTRACT_VERSION } from './extensions.js';

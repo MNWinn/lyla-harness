@@ -11,11 +11,18 @@ import { Session, recoverInterruptedCalls } from './session.js';
 import { loadContext } from './context.js';
 import { loadConfig, saveConfig, setup } from './config.js';
 import { CodexAgent, loginCodex } from './codex.js';
+import { ExtensionHost, installExtension, listExtensions, manageExtension, runtimeIdentity } from './extensions.js';
+const identity = await runtimeIdentity();
+const extensionRuntime = { Agent, createProvider, createTools, Session, loadContext, version: identity.harnessVersion, toolFingerprint: identity.toolFingerprint };
 
 const HELP = `Lyla — a small, model-agnostic coding harness
 
 Usage:
   lyla                  Start chat, or first-run setup if unconfigured
+  lyla install local:PATH Register a local extension without downloading
+  lyla install npm:NAME  Install a package with scripts disabled
+  lyla extensions list|enable|disable|update|remove [ID]
+  lyla eval ...         Run an installed extension command
   lyla setup            Choose and save a default provider/model
   lyla login            Sign in with ChatGPT through Codex and use that backend
   lyla login --device-auth  Use Codex's device-code login
@@ -74,6 +81,34 @@ export function parseArgs(argv) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
+  if (argv[0] === 'install') {
+    if (!(argv.length === 2 || argv.length === 3 && argv[1] === 'local')) throw new Error('Usage: lyla install npm:NAME, local:PATH, or local PATH');
+    const entry = await installExtension(argv[1] === 'local' ? `local:${argv[2]}` : argv[1]);
+    process.stdout.write(`Extension ${entry.id}@${entry.version} enabled. Installation does not activate guidance.\n`); return;
+  }
+  if (argv[0] === 'extensions') {
+    const [action, id, flag, version] = argv.slice(1);
+    if (action === 'list' && argv.length === 2) process.stdout.write(JSON.stringify(await listExtensions(), null, 2) + '\n');
+    else {
+      if (!id || argv.length > 5 || (flag && (flag !== '--version' || !version || action !== 'update'))) throw new Error('Usage: lyla extensions list|enable|disable|update|remove [ID] [--version VERSION]');
+      process.stdout.write(JSON.stringify(await manageExtension(action, id, { version }), null, 2) + '\n');
+    }
+    return;
+  }
+  if (argv[0] && !argv[0].startsWith('-') && !['login','/login','setup'].includes(argv[0])) {
+    const args = argv.slice(1); const cwdIndex = args.indexOf('--cwd');
+    if (cwdIndex >= 0 && !args[cwdIndex + 1]) throw new Error('Missing --cwd value');
+    const cwd = await realpath(resolve(cwdIndex >= 0 ? args.splice(cwdIndex, 2)[1] : process.cwd()));
+    const config = await loadConfig();
+    const host = new ExtensionHost({ runtime: extensionRuntime, getContext: () => ({ cwd, provider: config.provider ? { id: config.provider, model: config.model, baseUrl: config.baseUrl } : undefined, tools: createTools().map(t => t.name) }) });
+    const controller = new AbortController();
+    const interrupt = () => controller.abort(new Error('Command cancelled'));
+    process.on('SIGINT', interrupt);
+    try { await host.load(); await host.dispatch(argv[0].replace(/^\//, ''), args, { signal: controller.signal }); }
+    catch (error) { if (!controller.signal.aborted) throw error; }
+    finally { process.removeListener('SIGINT', interrupt); await host.dispose(); if (controller.signal.aborted) process.exitCode = 130; }
+    return;
+  }
   if (argv[0] === 'login' || argv[0] === '/login') {
     if (argv.length > 2 || argv[1] && argv[1] !== '--device-auth') throw new Error('Usage: lyla login [--device-auth]');
     await loginCodex({ device: argv[1] === '--device-auth' });
@@ -123,9 +158,11 @@ export async function main(argv = process.argv.slice(2)) {
     }
     if (event.type === 'tool_start') output(`  → ${event.name ?? event.toolCall?.name ?? event.call?.name ?? 'tool'}\n`);
   };
-  const sink = async event => display(await session.append(event));
+  let extensions;
+  const sink = async event => { const persisted = await session.append(event); display(persisted); await extensions?.onEvent(persisted); };
+  const extensionContext = () => ({ cwd, sessionId: session?.id, journalPath: session?.file, provider: agent ? { id: agent.provider.id, model: agent.provider.model, reasoning, baseUrl: currentBaseUrl } : undefined, tools: createTools().map(t => t.name) });
   const makeProvider = (provider, model, baseUrl) => provider === 'codex' ? { id: 'codex', model, reasoning } : createProvider({ provider, model, baseUrl, reasoning });
-  const makeAgent = (provider, messages) => new (provider.id === 'codex' ? CodexAgent : Agent)({ provider, tools: createTools(), system: session.metadata.system, cwd, messages, maxSteps: options.maxSteps, onEvent: sink });
+  const makeAgent = (provider, messages) => new (provider.id === 'codex' ? CodexAgent : Agent)({ provider, tools: createTools(), system: session.metadata.system, cwd, messages, maxSteps: options.maxSteps, onEvent: sink, beforeRun: ctx => extensions?.beforeRun(ctx), beforeRequest: ctx => extensions ? extensions.beforeRequest(ctx) : '' });
 
   async function initialize(resume) {
     let context;
@@ -150,6 +187,8 @@ export async function main(argv = process.argv.slice(2)) {
     }
     if (!resume && reasoning) await sink({ type: 'reasoning_change', reasoning });
     agent = makeAgent(provider, session.messages);
+    await extensions?.dispose();
+    extensions = await new ExtensionHost({ runtime: extensionRuntime, getContext: extensionContext, append: event => session.append(event), report: text => output(`${text}\n`), contextBudgetBytes: Number(process.env.LYLA_EXTENSION_CONTEXT_BYTES ?? 8192) }).load();
     if (options.json) display({ type: 'session', id: session.id, file: session.file, provider: provider.id, model: provider.model });
     else output(`Lyla · ${provider.id}/${provider.model}\nSession ${session.id}\n`);
   }
@@ -252,9 +291,15 @@ export async function main(argv = process.argv.slice(2)) {
           const match = /^\/feedback\s+(accepted|rejected|correction)(?:\s+([\s\S]*))?$/.exec(text);
           if (!match) throw new Error('Usage: /feedback accepted|rejected|correction [note]');
           const event = await session.feedback(match[1], match[2] ?? '');
+          await extensions?.onEvent(event);
           if (options.json) display(event);
           else output('Feedback recorded. It has not been turned into a rule.\n');
-        } else if (text.startsWith('/')) throw new Error('Unknown command. Use /help.');
+        } else if (text.startsWith('/')) {
+          const [command, ...args] = text.slice(1).split(/\s+/);
+          controller = new AbortController(); rl.render();
+          try { await extensions.dispatch(command, args, { signal: controller.signal }); }
+          finally { controller = undefined; rl.render(); }
+        }
         else if (text) { rl.userMessage(text); await run(text); }
       } catch (error) { output(`${error.message}\n`); }
       rl.render();
@@ -262,6 +307,7 @@ export async function main(argv = process.argv.slice(2)) {
   } finally {
     process.removeListener('SIGINT', interrupt);
     rl?.close();
+    await extensions?.dispose();
     await session?.close();
   }
 }

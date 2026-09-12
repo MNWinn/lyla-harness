@@ -20,7 +20,7 @@ function result(id, model, endpoint, content, toolCalls, native, finishReason, u
 }
 function tokens(usage, input, output) {
   if (!usage) return undefined;
-  return { inputTokens: Number.isFinite(usage[input]) ? usage[input] : 0, outputTokens: Number.isFinite(usage[output]) ? usage[output] : 0 };
+  return { inputTokens: Number.isFinite(usage[input]) ? usage[input] : null, outputTokens: Number.isFinite(usage[output]) ? usage[output] : null };
 }
 export function createProvider({ provider, model, baseUrl, apiKey, reasoning, maxTokens = 4096, timeoutMs = 120000 } = {}) {
   requireValue(['demo', 'openai', 'anthropic', 'openai-compatible'].includes(provider), 'Unknown provider; choose demo, openai, anthropic, or openai-compatible');
