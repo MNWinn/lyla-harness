@@ -88,3 +88,20 @@ test('runtime context has identity and delegated capabilities and object disposa
   const ctx = await host.dispatch('fixture'); assert.match(ctx.toolFingerprint,/^[a-f0-9]{64}$/); assert.equal(ctx.harnessVersion,'0.1.0'); assert.equal(ctx.capabilities.injectionScope,'backend-turn');
   await host.dispose(); assert.deepEqual(output,['disposed']);
 });
+test('command dispatch passes live cancellation and awaits handler cleanup', async () => {
+  const {root,source} = await fixture(`export function activate(host) { host.registerCommand('fixture', async (args,ctx) => { await new Promise(resolve => ctx.signal.addEventListener('abort',resolve,{once:true})); host.report('cleaned'); }); }`);
+  await installExtension(source,{root}); const output = [], controller = new AbortController();
+  const host = await new ExtensionHost({root,report:text=>output.push(text)}).load();
+  const pending = host.dispatch('fixture', [], {signal:controller.signal}); controller.abort(); await pending;
+  assert.deepEqual(output,['cleaned']); await host.dispose();
+});
+test('offline SIGINT waits for extension command cleanup and exits 130', async () => {
+  const {spawn} = await import('node:child_process'); const {symlink} = await import('node:fs/promises');
+  const {root,source} = await fixture(`export function activate(host) { host.registerCommand('fixture', async (args,ctx) => { host.report('ready'); await new Promise(resolve => {const timer=setInterval(()=>{},100);ctx.signal.addEventListener('abort',()=>{clearInterval(timer);resolve();},{once:true});}); host.report('cleaned'); }); }`);
+  await installExtension(source,{root}); const config=join(root,'..','config');await mkdir(config);await symlink(root,join(config,'extensions'));
+  const child=spawn(process.execPath,['src/cli.js','fixture'],{cwd:process.cwd(),env:{...process.env,LYLA_CONFIG_DIR:config},stdio:['ignore','pipe','pipe']});
+  let output=''; const timeout=setTimeout(()=>child.kill('SIGKILL'),5000);
+  child.stdout.on('data',data=>{output+=data;if(output.includes('ready')&&!output.includes('cleaned'))child.kill('SIGINT');});
+  const code=await new Promise((resolve,reject)=>{child.on('error',reject);child.on('close',resolve);});clearTimeout(timeout);
+  assert.equal(code,130);assert.match(output,/cleaned/);
+});

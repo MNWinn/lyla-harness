@@ -166,7 +166,7 @@ export class ExtensionHost {
     return this;
     } catch (error) { await this.dispose(); throw error; }
   }
-  async dispatch(name, args = []) { const handler = this.commands.get(name); if (!handler) throw new Error(`Unknown extension command: ${name}`); return handler(clone(args), this.getContext()); }
+  async dispatch(name, args = [], { signal } = {}) { const handler = this.commands.get(name); if (!handler) throw new Error(`Unknown extension command: ${name}`); return handler(clone(args), Object.freeze({ ...this.getContext(), signal })); }
   async beforeRun(extra) { for (const handler of this.starts) await handler(this.getContext(extra)); }
   async onEvent(event) { for (const handler of this.events) await handler(clone(event), this.getContext()); }
   async beforeRequest(extra) {

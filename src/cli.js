@@ -11,8 +11,9 @@ import { Session, recoverInterruptedCalls } from './session.js';
 import { loadContext } from './context.js';
 import { loadConfig, saveConfig, setup } from './config.js';
 import { CodexAgent, loginCodex } from './codex.js';
-import { ExtensionHost, installExtension, listExtensions, manageExtension } from './extensions.js';
-const extensionRuntime = { Agent, createProvider, createTools, Session, loadContext };
+import { ExtensionHost, installExtension, listExtensions, manageExtension, runtimeIdentity } from './extensions.js';
+const identity = await runtimeIdentity();
+const extensionRuntime = { Agent, createProvider, createTools, Session, loadContext, version: identity.harnessVersion, toolFingerprint: identity.toolFingerprint };
 
 const HELP = `Lyla — a small, model-agnostic coding harness
 
@@ -100,7 +101,12 @@ export async function main(argv = process.argv.slice(2)) {
     const cwd = await realpath(resolve(cwdIndex >= 0 ? args.splice(cwdIndex, 2)[1] : process.cwd()));
     const config = await loadConfig();
     const host = new ExtensionHost({ runtime: extensionRuntime, getContext: () => ({ cwd, provider: config.provider ? { id: config.provider, model: config.model, baseUrl: config.baseUrl } : undefined, tools: createTools().map(t => t.name) }) });
-    try { await host.load(); await host.dispatch(argv[0].replace(/^\//, ''), args); } finally { await host.dispose(); }
+    const controller = new AbortController();
+    const interrupt = () => controller.abort(new Error('Command cancelled'));
+    process.on('SIGINT', interrupt);
+    try { await host.load(); await host.dispatch(argv[0].replace(/^\//, ''), args, { signal: controller.signal }); }
+    catch (error) { if (!controller.signal.aborted) throw error; }
+    finally { process.removeListener('SIGINT', interrupt); await host.dispose(); if (controller.signal.aborted) process.exitCode = 130; }
     return;
   }
   if (argv[0] === 'login' || argv[0] === '/login') {
@@ -288,7 +294,12 @@ export async function main(argv = process.argv.slice(2)) {
           await extensions?.onEvent(event);
           if (options.json) display(event);
           else output('Feedback recorded. It has not been turned into a rule.\n');
-        } else if (text.startsWith('/')) { const [command, ...args] = text.slice(1).split(/\s+/); await extensions.dispatch(command, args); }
+        } else if (text.startsWith('/')) {
+          const [command, ...args] = text.slice(1).split(/\s+/);
+          controller = new AbortController(); rl.render();
+          try { await extensions.dispatch(command, args, { signal: controller.signal }); }
+          finally { controller = undefined; rl.render(); }
+        }
         else if (text) { rl.userMessage(text); await run(text); }
       } catch (error) { output(`${error.message}\n`); }
       rl.render();

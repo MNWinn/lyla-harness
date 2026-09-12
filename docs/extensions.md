@@ -26,6 +26,10 @@ runtime dependencies require an npm installation or a self-contained build.
 - `registerCommand(name, async (args, context) => {})`: unprefixed top-level name,
   routed from `/name ...` or `lyla name ... --cwd PATH`. Reserved/duplicate names
   fail activation. Offline commands do not initialize a provider or authenticate.
+  Command context includes a live `signal` AbortSignal; SIGINT and interactive
+  cancellation abort it. Handlers must pass it to long operations and await cleanup.
+  Unlike evidence/context data this deliberate cancellation capability is not cloned.
+  Offline cancellation exits with status 130 after disposal.
 - `onRunStart(async context => {})`: awaited before `run_start` and execution;
   includes `prompt`. Failure stops the turn.
 - `onEvent(async (event, context) => {})`: observes persisted events, including
@@ -41,7 +45,8 @@ runtime dependencies require an npm installation or a self-contained build.
   `journalPath`, `provider: {id, model, reasoning, baseUrl}`, and tool names.
   `harnessVersion`, `toolFingerprint` (SHA-256 of tool implementation), and
   `capabilities` identify direct-request or delegated-turn injection and telemetry.
-- `runtime`: `Agent`, `createProvider`, `createTools`, `Session`, `loadContext`.
+- `runtime`: `Agent`, `createProvider`, `createTools`, `Session`, `loadContext`,
+  `version`, `toolFingerprint`.
 - `report(text)`: write command output.
 
 Contexts/events/arguments are cloned and frozen. Contributions are cloned,
