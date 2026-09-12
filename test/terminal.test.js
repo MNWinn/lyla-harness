@@ -38,3 +38,13 @@ test('reasoning choices are restricted to known supporting models', () => {
   assert.deepEqual(reasoningLevels('codex', 'gpt-6-astra'), ['low', 'medium', 'high', 'xhigh', 'max']);
   assert.deepEqual(reasoningLevels('anthropic', 'any'), []);
 });
+
+test('working spinner animates and stops after completion or suspension', async t => {
+  const f = fixture(t);
+  f.busy(true); f.ui.render();
+  assert.match(f.rendered(), /⠋ Working…/);
+  await new Promise(resolve => setTimeout(resolve, 130));
+  assert.match(f.rendered(), /⠙ Working…/);
+  f.busy(false); f.ui.render(); assert.equal(f.ui.spinner, undefined);
+  f.busy(true); f.ui.render(); f.ui.pause(); assert.equal(f.ui.spinner, undefined);
+});

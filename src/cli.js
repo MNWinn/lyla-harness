@@ -255,7 +255,7 @@ export async function main(argv = process.argv.slice(2)) {
           if (options.json) display(event);
           else output('Feedback recorded. It has not been turned into a rule.\n');
         } else if (text.startsWith('/')) throw new Error('Unknown command. Use /help.');
-        else if (text) { rl.log(`\nYou\n${text}\n`); await run(text); }
+        else if (text) { rl.userMessage(text); await run(text); }
       } catch (error) { output(`${error.message}\n`); }
       rl.render();
     }

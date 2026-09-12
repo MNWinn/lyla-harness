@@ -24,9 +24,14 @@ export class TerminalChat {
     this.clear();
     const width = Math.max(8, (this.output.columns || 80) - 1);
     const { model, reasoning = 'default', busy = false } = this.status();
+    if (busy && !this.spinner) {
+      this.spinnerFrame = 0;
+      this.spinner = setInterval(() => { this.spinnerFrame++; this.render(); }, 100);
+      this.spinner.unref();
+    } else if (!busy) this.stopSpinner();
     const color = { low: 36, medium: 34, high: 35, xhigh: 33, max: 31 }[reasoning] || 35;
     const paint = s => process.env.NO_COLOR !== undefined ? s : `\x1b[${color}m${s}\x1b[0m`;
-    const title = ` ${busy ? 'Working · Esc cancel' : 'Lyla'} · ${reasoning} `;
+    const title = ` ${busy ? `${'⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[this.spinnerFrame % 10]} Working… · Esc cancel` : 'Lyla'} · ${reasoning} `;
     const top = (title + '─'.repeat(width)).slice(0, width);
     const footer = clean(`${model} · Shift+Tab thinking · Enter send · Alt+Enter newline`).slice(0, width);
     // A horizontally scrolling input keeps the frame stable even in narrow terminals.
@@ -42,6 +47,28 @@ export class TerminalChat {
     this.drawn = true;
   }
   log(text) { this.clear(); this.output.write(`${clean(text)}\n`); this.render(); }
+  stopSpinner() { clearInterval(this.spinner); this.spinner = undefined; }
+  userMessage(text) {
+    this.clear();
+    const width = Math.max(8, (this.output.columns || 80) - 1);
+    const rows = [''];
+    for (const line of clean(text).replace(/\t/g, '    ').split('\n')) {
+      let row = '', cells = 0;
+      for (const ch of line) {
+        const size = cellWidth(ch);
+        if (cells + size > width - 4) { rows.push('  ' + row + ' '.repeat(width - cells - 2)); row = ''; cells = 0; }
+        row += ch; cells += size;
+      }
+      rows.push('  ' + row + ' '.repeat(width - cells - 2));
+    }
+    rows.push('');
+    const color = process.env.NO_COLOR === undefined;
+    this.output.write('\n' + rows.map(row => {
+      const padded = row || ' '.repeat(width);
+      return color ? `\x1b[48;2;46;46;58m\x1b[38;2;235;235;245m${padded}\x1b[0m` : padded;
+    }).join('\n') + '\n\n');
+    this.render();
+  }
   read() {
     if (this.closed) return Promise.resolve(null);
     this.render();
@@ -83,7 +110,7 @@ export class TerminalChat {
     this.text = chars.join('');
     if (!this.pasting) this.render();
   }
-  pause() { this.clear(); this.suspended = true; this.input.setRawMode?.(this.raw || false); this.output.write('\x1b[?2004l'); }
+  pause() { this.stopSpinner(); this.clear(); this.suspended = true; this.input.setRawMode?.(this.raw || false); this.output.write('\x1b[?2004l'); }
   resume() { this.suspended = false; this.input.setRawMode?.(true); this.input.resume(); this.output.write('\x1b[?2004h'); this.render(); }
   close() {
     if (this.closed) return;
