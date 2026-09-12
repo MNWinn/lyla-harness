@@ -5,13 +5,14 @@ import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
 import { select } from './select.js';
 import { modelChoices } from './models.js';
+import { loginCodex } from './codex.js';
 
 export function configPath() {
   return join(process.env.LYLA_CONFIG_DIR || join(homedir(), '.config', 'lyla'), 'config.json');
 }
 
 export function validateConfig(value) {
-  if (!value || !['openai', 'anthropic', 'openai-compatible', 'demo'].includes(value.provider)) throw new Error('Configuration needs a supported provider.');
+  if (!value || !['openai', 'anthropic', 'openai-compatible', 'codex', 'demo'].includes(value.provider)) throw new Error('Configuration needs a supported provider.');
   if (typeof value.model !== 'string' || !value.model.trim()) throw new Error('Configuration needs a model ID.');
   if (value.baseUrl !== undefined) {
     let url;
@@ -40,7 +41,7 @@ export async function saveConfig(value, file = configPath()) {
 }
 
 /** Ask only for non-secret settings. Credentials stay in environment variables. */
-export async function setup({ input = process.stdin, output = process.stderr, file = configPath(), choose = select, listModels = modelChoices } = {}) {
+export async function setup({ input = process.stdin, output = process.stderr, file = configPath(), choose = select, listModels = modelChoices, login = loginCodex } = {}) {
   const ask = async prompt => {
     const rl = createInterface({ input, output, terminal: Boolean(input.isTTY) });
     const abort = new AbortController();
@@ -50,10 +51,11 @@ export async function setup({ input = process.stdin, output = process.stderr, fi
   };
   output.write('\nWelcome to Lyla\nChoose a provider. Settings are saved locally; API keys are not.\n\n');
   const provider = await choose('Provider', [
-    { label: 'OpenAI', value: 'openai' },
+    { label: 'OpenAI (API key)', value: 'openai' },
     { label: 'Anthropic', value: 'anthropic' },
     { label: 'OpenAI-compatible / local server', value: 'openai-compatible' },
     { label: 'Offline demo (no model or key needed)', value: 'demo' },
+    { label: 'Sign in with ChatGPT / Codex (OAuth)', value: 'codex' },
   ], { input, output });
   let model = provider === 'demo' ? 'demo' : '';
   let baseUrl;
@@ -70,6 +72,7 @@ export async function setup({ input = process.stdin, output = process.stderr, fi
     model = await choose('Model', [...choices, { label: 'Enter a custom model ID…', value: '' }], { input, output });
     while (!model) model = await ask('Custom model ID: ');
   }
+  if (provider === 'codex') await login({ output });
   const config = await saveConfig({ provider, model, baseUrl }, file);
   output.write(`\nSaved ${provider}/${model} to ${file}\n`);
   const key = { openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' }[provider];

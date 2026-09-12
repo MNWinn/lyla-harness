@@ -18,6 +18,10 @@ const bundled = {
 };
 
 export async function modelChoices(provider, baseUrl, { fetchImpl = fetch } = {}) {
+  if (provider === 'codex') return {
+    note: 'Codex uses your ChatGPT login. Model access depends on your plan.',
+    choices: [{ label: 'Codex default model', value: 'default' }, ...bundled.openai.map(([name, id]) => ({ label: `${name} (${id})`, value: id }))],
+  };
   if (bundled[provider]) return {
     note: 'Built-in model list. Availability depends on your API account.',
     choices: bundled[provider].map(([name, id]) => ({ label: `${name} (${id})`, value: id })),

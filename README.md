@@ -53,6 +53,40 @@ node src/cli.js --provider openai-compatible --model YOUR_MODEL_ID \
   --base-url http://localhost:11434/v1
 ```
 
+### Sign in with ChatGPT / Codex
+
+Choose **Sign in with ChatGPT / Codex (OAuth)** in setup, or run:
+
+```sh
+lyla login
+lyla
+```
+
+Inside chat, `/login` signs in and switches the current session. `lyla login`
+preserves your selected OpenAI/Codex model and switches saved defaults to the
+Codex backend. Other providers use Codex's default model when switching. For a
+device-code flow, use `lyla login --device-auth`.
+
+Requires a current official Codex CLI on PATH (`npm install -g @openai/codex`).
+Lyla reuses an existing ChatGPT login when available; otherwise Codex opens its
+own browser sign-in flow. Codex owns credentials and token refresh. Lyla never
+reads `auth.json` or treats an OAuth token as an OpenAI API key. `LYLA_CODEX_BIN`
+can specify a different Codex executable.
+
+**Codex mode is an execution backend, not a raw model adapter.** The official
+Codex runtime performs coding and tool execution. Lyla journals its JSON events
+and final answer, and supplies portable conversation context for each turn.
+Codex runs with `workspace-write` sandboxing, no approval prompts, and its user
+configuration disabled for execution. Its authentication remains available.
+Operations requiring additional permissions fail rather than bypass the sandbox.
+This mode has a ten-minute turn timeout; Lyla's `--max-steps` only applies to the
+direct API tool loop. Cancellation stops the backend, but cannot undo edits.
+Native Codex reasoning state is not resumed between turns in this first version.
+
+Backend events are observational: Lyla flushes `backend_start` before launching
+Codex but cannot gate each of Codex's internal actions on journal persistence.
+Use the API-key backend when you need Lyla to own and control each tool call.
+
 Compatibility depends on the selected server and model supporting function
 tools. The local endpoint above is an example, not an installed service.
 
@@ -161,7 +195,7 @@ into the agent, and use `event => session.append(event)` as the sink.
 ## Current limits
 
 This is a tested foundation, not feature parity with Pi. Responses are currently
-non-streaming. There is no automatic context compaction, OAuth login, visual TUI,
+non-streaming. There is no automatic context compaction, visual TUI,
 MCP client, browser integration, plugin loader, or automatic skill discovery.
 Long sessions eventually need `/new` or may exceed a model's context window.
 
@@ -169,6 +203,6 @@ There is **no automatic learning or evaluation promotion yet**. The intended nex
 layer extracts candidate lessons from sessions, evaluates them independently,
 and promotes only evidence-backed procedures. See [the design](docs/design.md).
 
-Offline tests cover protocol translation against local HTTP fixtures, tool
+Offline tests cover Codex subprocess behavior, protocol translation against local HTTP fixtures, tool
 execution, cancellation, session recovery, and the CLI. Live authenticated
 provider/model interoperability must be verified with your chosen account.

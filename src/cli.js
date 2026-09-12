@@ -8,13 +8,16 @@ import { createProvider } from './providers.js';
 import { createTools } from './tools.js';
 import { Session, recoverInterruptedCalls } from './session.js';
 import { loadContext } from './context.js';
-import { loadConfig, setup } from './config.js';
+import { loadConfig, saveConfig, setup } from './config.js';
+import { CodexAgent, loginCodex } from './codex.js';
 
 const HELP = `Lyla — a small, model-agnostic coding harness
 
 Usage:
   lyla                  Start chat, or first-run setup if unconfigured
   lyla setup            Choose and save a default provider/model
+  lyla login            Sign in with ChatGPT through Codex and use that backend
+  lyla login --device-auth  Use Codex's device-code login
   lyla --demo -p "Hello"
   lyla --provider openai --model <model-id>
   lyla --provider anthropic --model <model-id> -p "Explain this project"
@@ -22,7 +25,7 @@ Usage:
 
 Options:
   -p, --print TEXT       Run one prompt and exit (also accepts piped stdin)
-  --provider NAME       openai | anthropic | openai-compatible | demo
+  --provider NAME       openai | anthropic | openai-compatible | codex | demo
   --model ID            Provider's model id; no hardcoded cloud model default
   --base-url URL        Custom provider API base URL
   --demo                Deterministic offline smoke-test provider, not an LLM
@@ -34,6 +37,7 @@ Options:
   -h, --help            Show this help
 
 Interactive commands:
+  /login                Sign in with ChatGPT and switch to the Codex backend
   /model PROVIDER MODEL [URL] Switch provider/model for subsequent turns
   /feedback VERDICT NOTE Record accepted, rejected, or correction feedback
   /session              Print current session id and journal path
@@ -69,6 +73,15 @@ export function parseArgs(argv) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
+  if (argv[0] === 'login' || argv[0] === '/login') {
+    if (argv.length > 2 || argv[1] && argv[1] !== '--device-auth') throw new Error('Usage: lyla login [--device-auth]');
+    await loginCodex({ device: argv[1] === '--device-auth' });
+    const previous = await loadConfig();
+    const model = ['openai', 'codex'].includes(previous.provider) ? previous.model : 'default';
+    await saveConfig({ provider: 'codex', model });
+    process.stderr.write(`Lyla now uses Codex/${model}. Run lyla to start.\n`);
+    return;
+  }
   if (argv[0] === 'setup') {
     if (argv.length !== 1) throw new Error('Usage: lyla setup');
     if (!process.stdin.isTTY) throw new Error('Run lyla setup in an interactive terminal.');
@@ -107,6 +120,8 @@ export async function main(argv = process.argv.slice(2)) {
     if (event.type === 'tool_start') process.stderr.write(`  → ${event.name ?? event.toolCall?.name ?? event.call?.name ?? 'tool'}\n`);
   };
   const sink = async event => display(await session.append(event));
+  const makeProvider = (provider, model, baseUrl) => provider === 'codex' ? { id: 'codex', model } : createProvider({ provider, model, baseUrl });
+  const makeAgent = (provider, messages) => new (provider.id === 'codex' ? CodexAgent : Agent)({ provider, tools: createTools(), system: session.metadata.system, cwd, messages, maxSteps: options.maxSteps, onEvent: sink });
 
   async function initialize(resume) {
     let context;
@@ -119,7 +134,7 @@ export async function main(argv = process.argv.slice(2)) {
     const model = options.demo ? 'demo' : options.model ?? lastProvider?.model;
     if (!providerName || !model) throw new Error('Choose --provider and --model, or use --demo for an offline smoke test. See --help.');
     currentBaseUrl = options.baseUrl ?? (providerName === lastProvider?.provider ? lastProvider.baseUrl : undefined);
-    const provider = createProvider({ provider: providerName, model, baseUrl: currentBaseUrl });
+    const provider = makeProvider(providerName, model, currentBaseUrl);
     if (!session) session = await Session.create(directory, { cwd, provider: provider.id, model: provider.model, baseUrl: currentBaseUrl, system: context.system });
     else {
       await recoverInterruptedCalls(session);
@@ -127,7 +142,7 @@ export async function main(argv = process.argv.slice(2)) {
         await sink({ type: 'provider_change', provider: provider.id, model: provider.model, baseUrl: currentBaseUrl });
       }
     }
-    agent = new Agent({ provider, tools: createTools(), system: session.metadata.system, cwd, messages: session.messages, maxSteps: options.maxSteps, onEvent: sink });
+    agent = makeAgent(provider, session.messages);
     if (options.json) display({ type: 'session', id: session.id, file: session.file, provider: provider.id, model: provider.model });
     else process.stderr.write(`Lyla · ${provider.id}/${provider.model}\nSession ${session.id}\n`);
   }
@@ -175,6 +190,21 @@ export async function main(argv = process.argv.slice(2)) {
         if (text === '/exit' || text === '/quit') break;
         if (text === '/help') process.stderr.write(HELP);
         else if (text === '/session') process.stderr.write(`${session.id}\n${session.file}\n`);
+        else if (text === '/login') {
+          // Release readline's raw-mode ownership while Codex runs its login flow.
+          rl.pause();
+          process.stdin.setRawMode?.(false);
+          try {
+            await loginCodex();
+            const model = ['openai', 'codex'].includes(agent.provider.id) ? agent.provider.model : 'default';
+            await saveConfig({ provider: 'codex', model });
+            await sink({ type: 'provider_change', provider: 'codex', model });
+            agent = makeAgent({ id: 'codex', model }, agent.messages);
+            options.provider = 'codex'; options.model = model; options.demo = false;
+            options.baseUrl = undefined; currentBaseUrl = undefined;
+            process.stderr.write(`Using Codex/${model} with ChatGPT sign-in.\n`);
+          } finally { process.stdin.setRawMode?.(true); rl.resume(); }
+        }
         else if (text === '/new') {
           options.provider = agent.provider.id;
           options.model = agent.provider.model;
@@ -186,9 +216,9 @@ export async function main(argv = process.argv.slice(2)) {
           const parts = text.split(/\s+/);
           if (parts.length < 3 || parts.length > 4) throw new Error('Usage: /model PROVIDER MODEL [BASE_URL]');
           const baseUrl = parts[3] ?? (parts[1] === agent.provider.id ? currentBaseUrl : undefined);
-          const provider = createProvider({ provider: parts[1], model: parts[2], baseUrl });
+          const provider = makeProvider(parts[1], parts[2], baseUrl);
           await sink({ type: 'provider_change', provider: provider.id, model: provider.model, baseUrl });
-          agent.setProvider(provider);
+          agent = makeAgent(provider, agent.messages);
           currentBaseUrl = baseUrl;
           options.demo = false;
           options.provider = provider.id;

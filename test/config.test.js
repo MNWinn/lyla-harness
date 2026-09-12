@@ -63,3 +63,12 @@ test('cancelling model selection leaves existing settings untouched', async t =>
   } }), /cancelled/);
   assert.equal((await loadConfig(file)).provider, 'demo');
 });
+
+test('Codex setup authenticates before saving the backend', async t => {
+  const file = await fixture(t);
+  let loggedIn = false;
+  const output = new Writable({ write(chunk, encoding, callback) { callback(); } });
+  await setup({ file, output, choose: async title => title === 'Provider' ? 'codex' : 'gpt-6-astra', login: async () => { loggedIn = true; } });
+  assert.equal(loggedIn, true);
+  assert.deepEqual(await loadConfig(file), { provider: 'codex', model: 'gpt-6-astra' });
+});

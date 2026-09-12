@@ -27,6 +27,13 @@ the sequential tool loop, cancellation, and a model-call bound. Tools own argume
 validation and execution. The journal owns ordered durable evidence. The terminal
 owns presentation and explicit user feedback.
 
+The optional `CodexAgent` backend supports ChatGPT OAuth through the official
+Codex CLI. It delegates execution instead of adapting OAuth credentials to an API.
+Lyla saves `backend_start` before launch and `backend_event` records afterward;
+per-action flush-before-execute guarantees apply only to Lyla's direct API loop.
+The backend uses a fresh ephemeral Codex run with portable conversation context
+on each turn. Credential storage and refresh remain entirely with Codex.
+
 Provider-native fields stay alongside canonical text/tool messages so an adapter
 can continue its model's protocol without forcing the core to understand it.
 Switching models can discard native fields without discarding the user's work.
