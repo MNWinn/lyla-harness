@@ -73,6 +73,7 @@ export class Agent {
           await this.#message(toolMessage);
           await this.#emit({ type: 'tool_result', message: toolMessage });
         }
+        if (signal?.aborted) result = { status: 'cancelled' };
         if (result) break;
       }
       result ||= { status: 'limit' };

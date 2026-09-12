@@ -75,3 +75,9 @@ test('failed durable tool-start event prevents tool execution', async () => {
   assert.equal(executed, false);
   assert.equal(agent.messages.at(-1).isError, true);
 });
+
+ test('cancellation during last tool at step limit returns cancelled', async () => {
+  const controller = new AbortController();
+  const agent = new Agent({ provider: provider(answer([call()])), maxSteps: 1, tools: [{ ...echo, async execute() { controller.abort(); return 'finished'; } }] });
+  assert.equal((await agent.run('Go', { signal: controller.signal })).status, 'cancelled');
+});
