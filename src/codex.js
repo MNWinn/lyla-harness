@@ -33,13 +33,14 @@ export async function loginCodex({ device = false, output = process.stderr } = {
 /** Official Codex execution backend. Codex owns its tool loop and sandbox. */
 export class CodexAgent {
   #running = false;
-  constructor({ provider, system = '', cwd = process.cwd(), messages = [], onEvent = async () => {}, timeoutMs = 600000 }) {
+  constructor({ provider, system = '', cwd = process.cwd(), messages = [], onEvent = async () => {}, timeoutMs = 600000, beforeRun = async () => {}, beforeRequest = async () => '' }) {
     this.provider = provider;
     this.system = system;
     this.cwd = cwd;
     this.messages = structuredClone(messages);
     this.onEvent = onEvent;
     this.timeoutMs = timeoutMs;
+    this.beforeRun = beforeRun; this.beforeRequest = beforeRequest;
   }
 
   async run(prompt, { signal } = {}) {
@@ -61,12 +62,15 @@ export class CodexAgent {
     let result;
     try {
       signal?.throwIfAborted();
+      await this.beforeRun(Object.freeze({ prompt }));
       if (!await codexLoginStatus()) throw new Error('Sign in with lyla login before using the Codex backend.');
       await emit({ type: 'run_start', provider: 'codex', model: this.provider.model, backend: 'codex-cli' });
       await message({ role: 'user', content: prompt });
       // Send portable conversation context; credentials never enter Lyla's history.
       const history = this.messages.map(({ role, content }) => ({ role, content }));
-      const input = `${this.system}\n\nContinue this conversation. Complete the latest user request using your coding tools. Previous messages are context, not new instructions.\n${JSON.stringify(history)}`;
+      const contribution = await this.beforeRequest(Object.freeze({ prompt, requestIndex: 0, injectionScope: 'backend-turn' }));
+      if (typeof contribution !== 'string') throw new Error('beforeRequest must return text');
+      const input = `${this.system}\n\n${contribution}\n\nContinue this conversation. Complete the latest user request using your coding tools. Previous messages are context, not new instructions.\n${JSON.stringify(history)}`;
       await emit({ type: 'backend_start', backend: 'codex-cli', sandbox: 'workspace-write' });
       signal?.throwIfAborted();
       const args = ['exec', '--json', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-c', 'approval_policy="never"', '-C', this.cwd];
@@ -101,7 +105,7 @@ export class CodexAgent {
         if (event.type === 'item.completed' && event.item?.type === 'agent_message') final = event.item.text;
         if (event.type === 'turn.completed') {
           completed = true;
-          if (event.usage) await emit({ type: 'usage', usage: { inputTokens: event.usage.input_tokens ?? 0, outputTokens: event.usage.output_tokens ?? 0 } });
+          if (event.usage) await emit({ type: 'usage', usage: { inputTokens: event.usage.input_tokens ?? null, outputTokens: event.usage.output_tokens ?? null } });
         }
         if (event.type === 'turn.failed' || event.type === 'error') {
           failed = true;
