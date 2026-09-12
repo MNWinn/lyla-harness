@@ -3,6 +3,7 @@
 // https://platform.claude.com/docs/en/models/overview
 const bundled = {
   openai: [
+    ['GPT-6 Astra', 'gpt-6-astra'],
     ['GPT-5.6 Sol', 'gpt-5.6-sol'],
     ['GPT-5.6 Luna', 'gpt-5.6-luna'],
     ['GPT-5.4', 'gpt-5.4'],
