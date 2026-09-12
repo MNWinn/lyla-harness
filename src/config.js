@@ -3,6 +3,8 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
+import { select } from './select.js';
+import { modelChoices } from './models.js';
 
 export function configPath() {
   return join(process.env.LYLA_CONFIG_DIR || join(homedir(), '.config', 'lyla'), 'config.json');
@@ -38,34 +40,40 @@ export async function saveConfig(value, file = configPath()) {
 }
 
 /** Ask only for non-secret settings. Credentials stay in environment variables. */
-export async function setup({ input = process.stdin, output = process.stderr, file = configPath() } = {}) {
-  const rl = createInterface({ input, output, terminal: Boolean(input.isTTY) });
-  const abort = new AbortController();
-  rl.on('SIGINT', () => abort.abort());
-  const ask = async prompt => (await rl.question(prompt, { signal: abort.signal })).trim();
-  try {
-    output.write('\nWelcome to Lyla\nChoose a provider. Settings are saved locally; API keys are not.\n\n  1. OpenAI\n  2. Anthropic\n  3. OpenAI-compatible / local server\n  4. Offline demo (no model or key needed)\n\n');
-    let provider;
-    while (!provider) {
-      const choice = await ask('Provider [1–4]: ');
-      provider = { '1': 'openai', '2': 'anthropic', '3': 'openai-compatible', '4': 'demo' }[choice];
-      if (!provider) output.write('Enter 1, 2, 3, or 4.\n');
+export async function setup({ input = process.stdin, output = process.stderr, file = configPath(), choose = select, listModels = modelChoices } = {}) {
+  const ask = async prompt => {
+    const rl = createInterface({ input, output, terminal: Boolean(input.isTTY) });
+    const abort = new AbortController();
+    rl.on('SIGINT', () => abort.abort());
+    try { return (await rl.question(prompt, { signal: abort.signal })).trim(); }
+    finally { rl.close(); }
+  };
+  output.write('\nWelcome to Lyla\nChoose a provider. Settings are saved locally; API keys are not.\n\n');
+  const provider = await choose('Provider', [
+    { label: 'OpenAI', value: 'openai' },
+    { label: 'Anthropic', value: 'anthropic' },
+    { label: 'OpenAI-compatible / local server', value: 'openai-compatible' },
+    { label: 'Offline demo (no model or key needed)', value: 'demo' },
+  ], { input, output });
+  let model = provider === 'demo' ? 'demo' : '';
+  let baseUrl;
+  if (provider === 'openai-compatible') {
+    while (!baseUrl) {
+      const candidate = await ask('API base URL (including /v1 if required): ');
+      try { validateConfig({ provider, model: 'pending', baseUrl: candidate }); baseUrl = candidate; }
+      catch (error) { output.write(`${error.message}\n`); }
     }
-    let model = provider === 'demo' ? 'demo' : '';
-    while (!model) model = await ask('Model ID: ');
-    let baseUrl;
-    if (provider === 'openai-compatible') {
-      while (!baseUrl) {
-        const candidate = await ask('API base URL (including /v1 if required): ');
-        try { validateConfig({ provider, model, baseUrl: candidate }); baseUrl = candidate; }
-        catch (error) { output.write(`${error.message}\n`); }
-      }
-    }
-    const config = await saveConfig({ provider, model, baseUrl }, file);
-    output.write(`\nSaved ${provider}/${model} to ${file}\n`);
-    const key = { openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' }[provider];
-    const ready = !key || Boolean(process.env[key]);
-    if (!ready) output.write(`Set ${key} in your shell, then run lyla again. API keys are never saved by setup.\n`);
-    return { config, ready };
-  } finally { rl.close(); }
+  }
+  if (provider !== 'demo') {
+    const { note, choices } = await listModels(provider, baseUrl);
+    output.write(`\n${note}\n`);
+    model = await choose('Model', [...choices, { label: 'Enter a custom model ID…', value: '' }], { input, output });
+    while (!model) model = await ask('Custom model ID: ');
+  }
+  const config = await saveConfig({ provider, model, baseUrl }, file);
+  output.write(`\nSaved ${provider}/${model} to ${file}\n`);
+  const key = { openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' }[provider];
+  const ready = !key || Boolean(process.env[key]);
+  if (!ready) output.write(`Set ${key} in your shell, then run lyla again. API keys are never saved by setup.\n`);
+  return { config, ready };
 }

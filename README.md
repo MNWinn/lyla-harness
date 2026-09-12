@@ -16,11 +16,17 @@ npm link
 lyla
 ```
 
-On first launch, Lyla asks for a provider and model, saves those settings to
+On first launch, Lyla shows a provider and model picker. Use **↑/↓ and Enter**
+to choose, or **Escape** to cancel. It saves those settings to
 `~/.config/lyla/config.json`, and opens chat if credentials are available. Choose
 offline demo to try the interface without an account. Run `lyla setup` to change
 defaults later. API keys stay in environment variables; setup never saves them.
 `LYLA_CONFIG_DIR` overrides the settings directory.
+
+OpenAI and Anthropic have a built-in list of named models with exact API IDs;
+account access is not guaranteed by appearing in the list. Compatible servers
+are queried at `/models` (up to eight choices shown). **Enter a custom model ID**
+is always available for other models. Non-TTY interfaces use numbered choices.
 
 From this directory:
 

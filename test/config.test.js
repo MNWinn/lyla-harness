@@ -29,7 +29,7 @@ test('first-run setup saves an explicitly selected offline demo', async t => {
   let text = '';
   const output = new Writable({ write(chunk, encoding, callback) {
     text += chunk;
-    if (chunk.toString().includes('Provider [1')) setImmediate(() => input.write('4\n'));
+    if (chunk.toString().includes('Select [1')) setImmediate(() => input.write('4\n'));
     callback();
   } });
   const result = await setup({ input, output, file });
@@ -37,4 +37,29 @@ test('first-run setup saves an explicitly selected offline demo', async t => {
   assert.deepEqual(await loadConfig(file), { provider: 'demo', model: 'demo' });
   assert.match(text, /Welcome to Lyla/);
   input.destroy();
+});
+
+test('model picker persists the exact selected ID without asking for its format', async t => {
+  const file = await fixture(t);
+  const prompts = [];
+  const output = new Writable({ write(chunk, encoding, callback) { callback(); } });
+  const result = await setup({ file, output, choose: async (title, choices) => {
+    prompts.push(title);
+    if (title === 'Provider') return choices.find(c => c.value === 'openai').value;
+    return choices.find(c => c.value === 'gpt-5.4').value;
+  } });
+  assert.deepEqual(prompts, ['Provider', 'Model']);
+  assert.equal(result.config.model, 'gpt-5.4');
+  assert.equal((await loadConfig(file)).model, 'gpt-5.4');
+});
+
+test('cancelling model selection leaves existing settings untouched', async t => {
+  const file = await fixture(t);
+  await saveConfig({ provider: 'demo', model: 'demo' }, file);
+  const output = new Writable({ write(chunk, encoding, callback) { callback(); } });
+  await assert.rejects(setup({ file, output, choose: async title => {
+    if (title === 'Provider') return 'anthropic';
+    throw new Error('Setup cancelled.');
+  } }), /cancelled/);
+  assert.equal((await loadConfig(file)).provider, 'demo');
 });
