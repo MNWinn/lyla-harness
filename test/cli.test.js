@@ -48,7 +48,7 @@ test('CLI resume retains earlier conversation in provider requests', async t => 
   const cwd = await directory(t); const http = await fixture(t, () => completion());
   const first = await run([...http.args, '--cwd', cwd, '--json', '-p', 'First']);
   assert.equal(first.code, 0, first.stderr); const id = events(first)[0].id;
-  const second = await run([...http.args, '--cwd', cwd, '--resume', id, '--json', '-p', 'Second']);
+  const second = await run(['--cwd', cwd, '--resume', id, '--json', '-p', 'Second']);
   assert.equal(second.code, 0, second.stderr);
   assert.deepEqual(http.requests[1].messages.filter(m => m.role === 'user').map(m => m.content), ['First', 'Second']);
 });

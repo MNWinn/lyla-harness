@@ -31,7 +31,7 @@ Options:
   -h, --help            Show this help
 
 Interactive commands:
-  /model PROVIDER MODEL Switch provider/model for subsequent turns
+  /model PROVIDER MODEL [URL] Switch provider/model for subsequent turns
   /feedback VERDICT NOTE Record accepted, rejected, or correction feedback
   /session              Print current session id and journal path
   /new                  Start a new session and reload project instructions
@@ -67,12 +67,16 @@ export function parseArgs(argv) {
 export async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   if (options.help) { process.stdout.write(HELP); return; }
+  options.provider ??= process.env.LYLA_PROVIDER || undefined;
+  options.model ??= process.env.LYLA_MODEL || undefined;
+  options.baseUrl ??= process.env.LYLA_BASE_URL || undefined;
   const cwd = await realpath(resolve(options.cwd));
   const directory = resolve(options.sessionDir ?? resolve(cwd, '.lyla/sessions'));
   let session;
   let agent;
   let controller;
   let rl;
+  let currentBaseUrl;
   const display = event => {
     if (options.json) { process.stdout.write(`${JSON.stringify(event)}\n`); return; }
     if (event.type === 'message' && event.message.role === 'assistant' && event.message.content) {
@@ -89,15 +93,16 @@ export async function main(argv = process.argv.slice(2)) {
       if (session.metadata.cwd !== cwd) throw new Error(`This session belongs to ${session.metadata.cwd}. Resume with that --cwd.`);
     } else context = await loadContext(cwd);
     const lastProvider = session?.events.findLast(e => e.type === 'provider_change') ?? session?.metadata;
-    const providerName = options.demo ? 'demo' : options.provider ?? process.env.LYLA_PROVIDER ?? lastProvider?.provider;
-    const model = options.demo ? 'demo' : options.model ?? process.env.LYLA_MODEL ?? lastProvider?.model;
+    const providerName = options.demo ? 'demo' : options.provider ?? lastProvider?.provider;
+    const model = options.demo ? 'demo' : options.model ?? lastProvider?.model;
     if (!providerName || !model) throw new Error('Choose --provider and --model, or use --demo for an offline smoke test. See --help.');
-    const provider = createProvider({ provider: providerName, model, baseUrl: options.baseUrl ?? process.env.LYLA_BASE_URL });
-    if (!session) session = await Session.create(directory, { cwd, provider: provider.id, model: provider.model, system: context.system });
+    currentBaseUrl = options.baseUrl ?? (providerName === lastProvider?.provider ? lastProvider.baseUrl : undefined);
+    const provider = createProvider({ provider: providerName, model, baseUrl: currentBaseUrl });
+    if (!session) session = await Session.create(directory, { cwd, provider: provider.id, model: provider.model, baseUrl: currentBaseUrl, system: context.system });
     else {
       await recoverInterruptedCalls(session);
-      if (lastProvider.provider !== provider.id || lastProvider.model !== provider.model) {
-        await sink({ type: 'provider_change', provider: provider.id, model: provider.model });
+      if (lastProvider.provider !== provider.id || lastProvider.model !== provider.model || lastProvider.baseUrl !== currentBaseUrl) {
+        await sink({ type: 'provider_change', provider: provider.id, model: provider.model, baseUrl: currentBaseUrl });
       }
     }
     agent = new Agent({ provider, tools: createTools(), system: session.metadata.system, cwd, messages: session.messages, maxSteps: options.maxSteps, onEvent: sink });
@@ -151,19 +156,22 @@ export async function main(argv = process.argv.slice(2)) {
         else if (text === '/new') {
           options.provider = agent.provider.id;
           options.model = agent.provider.model;
+          options.baseUrl = currentBaseUrl;
           await session.close();
           session = undefined;
           await initialize();
         } else if (text.startsWith('/model ')) {
           const parts = text.split(/\s+/);
-          if (parts.length !== 3) throw new Error('Usage: /model PROVIDER MODEL');
-          const provider = createProvider({ provider: parts[1], model: parts[2], baseUrl: parts[1] === agent.provider.id ? options.baseUrl ?? process.env.LYLA_BASE_URL : undefined });
-          await sink({ type: 'provider_change', provider: provider.id, model: provider.model });
+          if (parts.length < 3 || parts.length > 4) throw new Error('Usage: /model PROVIDER MODEL [BASE_URL]');
+          const baseUrl = parts[3] ?? (parts[1] === agent.provider.id ? currentBaseUrl : undefined);
+          const provider = createProvider({ provider: parts[1], model: parts[2], baseUrl });
+          await sink({ type: 'provider_change', provider: provider.id, model: provider.model, baseUrl });
           agent.setProvider(provider);
+          currentBaseUrl = baseUrl;
           options.demo = false;
           options.provider = provider.id;
           options.model = provider.model;
-          if (parts[1] !== session.metadata.provider) options.baseUrl = undefined;
+          options.baseUrl = baseUrl;
           process.stderr.write(`Using ${provider.id}/${provider.model}.\n`);
         } else if (text.startsWith('/feedback ')) {
           const match = /^\/feedback\s+(accepted|rejected|correction)(?:\s+([\s\S]*))?$/.exec(text);
@@ -183,6 +191,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+const entryPath = process.argv[1] ? await realpath(resolve(process.argv[1])).catch(() => '') : '';
+if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
   main().catch(error => { process.stderr.write(`Lyla: ${error.message}\n`); process.exitCode = 1; });
 }

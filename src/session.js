@@ -6,8 +6,8 @@ const ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,100}$/;
 
 /** An append-only JSONL journal. One process may own a session at a time. */
 export class Session {
-  static async create(directory, { cwd, provider, model, system }) {
-    return Session.#open(directory, randomUUID(), { cwd: resolve(cwd), provider, model, system });
+  static async create(directory, { cwd, provider, model, baseUrl, system }) {
+    return Session.#open(directory, randomUUID(), { cwd: resolve(cwd), provider, model, baseUrl, system });
   }
 
   static async resume(directory, id) {
