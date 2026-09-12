@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /** Dependency-free, non-streaming provider adapters. Native state never crosses models. */
 const object = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const requireValue = (ok, message = 'Malformed provider response') => { if (!ok) throw new Error(message); };
@@ -9,10 +11,11 @@ function call(id, name, args) {
   requireValue(object(args), 'Provider tool arguments must be a JSON object');
   return { id, name, arguments: args };
 }
-function result(id, model, content, toolCalls, native, finishReason, usage) {
+function result(id, model, endpoint, content, toolCalls, native, finishReason, usage) {
   requireValue(typeof content === 'string');
+  requireValue(finishReason === 'length' || content.trim().length || toolCalls.length, 'Provider returned an empty completion');
   requireValue(new Set(toolCalls.map(x => x.id)).size === toolCalls.length, 'Provider returned duplicate tool call IDs');
-  const message = { role: 'assistant', content, ...(toolCalls.length ? { toolCalls } : {}), opaque: { provider: id, model, native } };
+  const message = { role: 'assistant', content, ...(toolCalls.length ? { toolCalls } : {}), opaque: { provider: id, model, endpoint, native } };
   return { message, finishReason: finishReason === 'length' ? 'length' : toolCalls.length ? 'tool_calls' : 'stop', ...(usage ? { usage } : {}) };
 }
 function tokens(usage, input, output) {
@@ -35,7 +38,8 @@ export function createProvider({ provider, model, baseUrl, apiKey, maxTokens = 4
   requireValue(['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash, 'Invalid provider base URL');
   const key = apiKey ?? (provider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : provider === 'openai' ? process.env.OPENAI_API_KEY : process.env.OPENAI_COMPATIBLE_API_KEY);
   requireValue(provider === 'openai-compatible' || key, `Set ${provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} or supply apiKey`);
-  const native = m => m.opaque?.provider === provider && m.opaque?.model === model ? m.opaque.native : undefined;
+  const endpointId = createHash('sha256').update(url.href.replace(/\/$/, '')).digest('hex');
+  const native = m => m.opaque?.provider === provider && m.opaque?.model === model && m.opaque?.endpoint === endpointId ? m.opaque.native : undefined;
   async function post(body, signal) {
     const timeout = AbortSignal.timeout(timeoutMs);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -58,11 +62,20 @@ export function createProvider({ provider, model, baseUrl, apiKey, maxTokens = 4
     }
   }
   return { id: provider, model, async complete({ system = '', messages = [], tools = [], signal }) {
+    // Reasoning-only truncated turns have nothing portable to replay.
+    messages = messages.filter(m => m.role !== 'assistant' || native(m) || m.content?.trim() || m.toolCalls?.length);
+    // Foreign call IDs may use a different vendor's alphabet or length. Rewrite
+    // only canonical fallback calls, and apply the same mapping to their results.
+    const ids = new Map();
+    for (const m of messages) if (m.role === 'assistant' && !native(m)) {
+      for (const t of m.toolCalls || []) ids.set(t.id, `call_${createHash('sha256').update(t.id).digest('hex').slice(0, 40)}`);
+    }
+    const callId = id => ids.get(id) || id;
     if (provider === 'openai') {
       const input = messages.flatMap(m => {
-        if (m.role === 'tool') return [{ type: 'function_call_output', call_id: m.toolCallId, output: m.content }];
+        if (m.role === 'tool') return [{ type: 'function_call_output', call_id: callId(m.toolCallId), output: m.content }];
         if (m.role === 'assistant' && native(m)) return native(m);
-        return [...(m.content ? [{ role: m.role, content: m.content }] : []), ...(m.toolCalls || []).map(t => ({ type: 'function_call', call_id: t.id, name: t.name, arguments: JSON.stringify(t.arguments) }))];
+        return [...(m.content ? [{ role: m.role, content: m.content }] : []), ...(m.toolCalls || []).map(t => ({ type: 'function_call', call_id: callId(t.id), name: t.name, arguments: JSON.stringify(t.arguments) }))];
       });
       const data = await post({ model, instructions: system, input, store: false, include: ['reasoning.encrypted_content'], max_output_tokens: maxTokens, tools: tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false })) }, signal);
       requireValue(Array.isArray(data.output) && ['completed', 'incomplete'].includes(data.status));
@@ -79,13 +92,13 @@ export function createProvider({ provider, model, baseUrl, apiKey, maxTokens = 4
           }
         } else requireValue(item.type === 'reasoning', 'Provider returned unsupported output');
       }
-      return result(provider, model, content, calls, data.output, data.status === 'incomplete' ? 'length' : 'stop', tokens(data.usage, 'input_tokens', 'output_tokens'));
+      return result(provider, model, endpointId, content, calls, data.output, data.status === 'incomplete' ? 'length' : 'stop', tokens(data.usage, 'input_tokens', 'output_tokens'));
     }
     if (provider === 'anthropic') {
       const converted = [];
       for (const m of messages) {
         const role = m.role === 'assistant' ? 'assistant' : 'user';
-        const content = m.role === 'tool' ? [{ type: 'tool_result', tool_use_id: m.toolCallId, content: m.content, is_error: m.isError }] : native(m) || [...(m.content ? [{ type: 'text', text: m.content }] : []), ...(m.toolCalls || []).map(t => ({ type: 'tool_use', id: t.id, name: t.name, input: t.arguments }))];
+        const content = m.role === 'tool' ? [{ type: 'tool_result', tool_use_id: callId(m.toolCallId), content: m.content, is_error: m.isError }] : native(m) || [...(m.content ? [{ type: 'text', text: m.content }] : []), ...(m.toolCalls || []).map(t => ({ type: 'tool_use', id: callId(t.id), name: t.name, input: t.arguments }))];
         if (converted.at(-1)?.role === role) converted.at(-1).content.push(...content);
         else converted.push({ role, content: [...content] });
       }
@@ -98,15 +111,17 @@ export function createProvider({ provider, model, baseUrl, apiKey, maxTokens = 4
         else if (item.type === 'tool_use') calls.push(call(item.id, item.name, item.input));
         else requireValue(['thinking', 'redacted_thinking'].includes(item.type), 'Provider returned unsupported output');
       }
-      return result(provider, model, content, calls, data.content, data.stop_reason === 'max_tokens' ? 'length' : 'stop', tokens(data.usage, 'input_tokens', 'output_tokens'));
+      requireValue(data.stop_reason === 'max_tokens' || (data.stop_reason === 'tool_use') === (calls.length > 0), 'Provider returned inconsistent tool stop reason');
+      return result(provider, model, endpointId, content, calls, data.content, data.stop_reason === 'max_tokens' ? 'length' : 'stop', tokens(data.usage, 'input_tokens', 'output_tokens'));
     }
-    const converted = messages.map(m => m.role === 'tool' ? { role: 'tool', tool_call_id: m.toolCallId, content: m.content } : native(m) || { role: m.role, content: m.content || null, ...(m.toolCalls?.length ? { tool_calls: m.toolCalls.map(t => ({ id: t.id, type: 'function', function: { name: t.name, arguments: JSON.stringify(t.arguments) } })) } : {}) });
+    const converted = messages.map(m => m.role === 'tool' ? { role: 'tool', tool_call_id: callId(m.toolCallId), content: m.content } : native(m) || { role: m.role, content: m.content || null, ...(m.toolCalls?.length ? { tool_calls: m.toolCalls.map(t => ({ id: callId(t.id), type: 'function', function: { name: t.name, arguments: JSON.stringify(t.arguments) } })) } : {}) });
     const data = await post({ model, messages: [{ role: 'system', content: system }, ...converted], max_tokens: maxTokens, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) }, signal);
     const choice = data.choices?.[0];
     requireValue(object(choice?.message) && ['stop', 'tool_calls', 'length'].includes(choice.finish_reason));
     const m = choice.message;
     requireValue(m.role === 'assistant' && (m.content == null || typeof m.content === 'string') && (m.tool_calls == null || Array.isArray(m.tool_calls)));
     const calls = (m.tool_calls || []).map(t => { requireValue(object(t) && t.type === 'function' && object(t.function)); return call(t.id, t.function.name, t.function.arguments); });
-    return result(provider, model, m.content || '', calls, m, choice.finish_reason, tokens(data.usage, 'prompt_tokens', 'completion_tokens'));
+    requireValue(choice.finish_reason === 'length' || (choice.finish_reason === 'tool_calls') === (calls.length > 0), 'Provider returned inconsistent tool stop reason');
+    return result(provider, model, endpointId, m.content || '', calls, m, choice.finish_reason, tokens(data.usage, 'prompt_tokens', 'completion_tokens'));
   } };
 }

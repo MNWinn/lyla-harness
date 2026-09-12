@@ -20,7 +20,7 @@ const request = { system: 'Be useful', messages: [{ role: 'user', content: 'Read
 const tool = { role: 'tool', toolCallId: 'c1', name: 'read', content: 'hello', isError: false };
 test('OpenAI preserves reasoning/tool output and falls back to canonical history on model change', async t => {
   const output = [{ type: 'reasoning', id: 'r1', summary: [], encrypted_content: 'opaque' }, { type: 'function_call', id: 'fc1', call_id: 'c1', name: 'read', arguments: '{"path":"a"}' }];
-  const f = await fixture(t, [{ status: 'completed', output, usage: { input_tokens: 4, output_tokens: 5 } }, { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'hello' }] }] }, { status: 'completed', output: [] }]);
+  const f = await fixture(t, [{ status: 'completed', output, usage: { input_tokens: 4, output_tokens: 5 } }, { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'hello' }] }] }, { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'done' }] }] }]);
   const p = createProvider({ provider: 'openai', model: 'test', apiKey: 'test', ...f });
   const first = await p.complete(request);
   assert.equal(first.message.toolCalls[0].arguments.path, 'a');
@@ -82,4 +82,63 @@ test('Configuration is validated and demo completes offline', async () => {
   assert.throws(() => createProvider({ provider: 'demo', model: 'demo', timeoutMs: -1 }), /timeoutMs/);
   const output = await createProvider({ provider: 'demo', model: 'demo' }).complete(request);
   assert.match(output.message.content, /offline demo/);
+});
+test('Changing endpoints never replays provider-native state', async t => {
+  const message = { role: 'assistant', content: 'hello', reasoning_content: 'private native state' };
+  const f1 = await fixture(t, [{ choices: [{ message, finish_reason: 'stop' }] }]);
+  const f2 = await fixture(t, [{ choices: [{ message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }] }]);
+  const first = await createProvider({ provider: 'openai-compatible', model: 'same', ...f1 }).complete(request);
+  assert.match(first.message.opaque.endpoint, /^[a-f0-9]{64}$/);
+  await createProvider({ provider: 'openai-compatible', model: 'same', ...f2 }).complete({ ...request, messages: [...request.messages, first.message, { role: 'user', content: 'next' }] });
+  assert.deepEqual(f2.requests[0].body.messages[2], { role: 'assistant', content: 'hello' });
+});
+test('Canonical calls use portable matching IDs across every adapter', async t => {
+  const original = `vendor/odd id:${'x'.repeat(80)}`;
+  const assistant = { role: 'assistant', content: '', toolCalls: [{ id: original, name: 'read', arguments: { path: 'a' } }] };
+  const history = { ...request, messages: [...request.messages, assistant, { ...tool, toolCallId: original }] };
+  const cases = [
+    ['openai', { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'done' }] }] }, body => [body.input[1].call_id, body.input[2].call_id]],
+    ['anthropic', { content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn' }, body => [body.messages[1].content[0].id, body.messages[2].content[0].tool_use_id]],
+    ['openai-compatible', { choices: [{ message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }] }, body => [body.messages[2].tool_calls[0].id, body.messages[3].tool_call_id]]
+  ];
+  for (const [provider, reply, extract] of cases) {
+    const f = await fixture(t, [reply]);
+    await createProvider({ provider, model: 'test', apiKey: 'test', ...f }).complete(history);
+    const [callId, resultId] = extract(f.requests[0].body);
+    assert.match(callId, /^[a-zA-Z0-9_-]{1,64}$/);
+    assert.equal(callId, resultId);
+    assert.equal(assistant.toolCalls[0].id, original);
+  }
+});
+test('Empty final outputs and contradictory tool stop reasons are rejected', async t => {
+  const cases = [
+    ['openai', { status: 'completed', output: [] }, /empty completion/],
+    ['anthropic', { content: [], stop_reason: 'end_turn' }, /empty completion/],
+    ['openai-compatible', { choices: [{ message: { role: 'assistant', content: ' ' }, finish_reason: 'stop' }] }, /empty completion/],
+    ['anthropic', { content: [{ type: 'text', text: 'done' }], stop_reason: 'tool_use' }, /inconsistent/],
+    ['anthropic', { content: [{ type: 'tool_use', id: 'c1', name: 'read', input: {} }], stop_reason: 'end_turn' }, /inconsistent/],
+    ['openai-compatible', { choices: [{ message: { role: 'assistant', content: 'done' }, finish_reason: 'tool_calls' }] }, /inconsistent/],
+    ['openai-compatible', { choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read', arguments: '{}' } }] }, finish_reason: 'stop' }] }, /inconsistent/]
+  ];
+  for (const [provider, reply, pattern] of cases) {
+    const f = await fixture(t, [reply]);
+    await assert.rejects(createProvider({ provider, model: 'test', apiKey: 'test', ...f }).complete(request), pattern);
+  }
+});
+test('Reasoning-only truncated history is omitted when native state is unavailable', async t => {
+  const f1 = await fixture(t, [{ status: 'incomplete', output: [{ type: 'reasoning', id: 'r1', encrypted_content: 'opaque', summary: [] }] }]);
+  const first = await createProvider({ provider: 'openai', model: 'test', apiKey: 'test', ...f1 }).complete(request);
+  assert.equal(first.finishReason, 'length');
+  assert.equal(first.message.content, '');
+  const history = { ...request, messages: [...request.messages, first.message, { role: 'user', content: 'continue' }] };
+  for (const [provider, reply] of [
+    ['anthropic', { content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn' }],
+    ['openai-compatible', { choices: [{ message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }] }],
+    ['openai', { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'done' }] }] }]
+  ]) {
+    const f = await fixture(t, [reply]);
+    await createProvider({ provider, model: 'other', apiKey: 'test', ...f }).complete(history);
+    const sent = f.requests[0].body.messages || f.requests[0].body.input;
+    assert.equal(sent.some(m => m.role === 'assistant' || m.type === 'reasoning'), false);
+  }
 });
