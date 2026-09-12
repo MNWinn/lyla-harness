@@ -81,8 +81,8 @@ export function parseArgs(argv) {
 
 export async function main(argv = process.argv.slice(2)) {
   if (argv[0] === 'install') {
-    if (argv.length !== 2) throw new Error('Usage: lyla install npm:NAME or local:PATH');
-    const entry = await installExtension(argv[1]);
+    if (!(argv.length === 2 || argv.length === 3 && argv[1] === 'local')) throw new Error('Usage: lyla install npm:NAME, local:PATH, or local PATH');
+    const entry = await installExtension(argv[1] === 'local' ? `local:${argv[2]}` : argv[1]);
     process.stdout.write(`Extension ${entry.id}@${entry.version} enabled. Installation does not activate guidance.\n`); return;
   }
   if (argv[0] === 'extensions') {

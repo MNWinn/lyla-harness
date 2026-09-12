@@ -61,3 +61,30 @@ test('CLI extension command runs offline with cwd and no configured provider', a
   const { stdout } = await promisify(execFile)(process.execPath, ['src/cli.js','fixture','hello','--cwd',source], { cwd:process.cwd(),env:{...process.env,LYLA_CONFIG_DIR:config} });
   assert.deepEqual(JSON.parse(stdout), {args:['hello'],cwd:await realpath(source)});
 });
+test('local snapshots reject symlinks and omit secrets and non-package files', async () => {
+  const { symlink } = await import('node:fs/promises');
+  const { root, source } = await fixture('export function activate() {}');
+  await symlink('/etc/passwd', join(source,'escape'));
+  await assert.rejects(installExtension(source,{root}), /symlinks/);
+  const { rm } = await import('node:fs/promises'); await rm(join(source,'escape'));
+  await writeFile(join(source,'.env'),'secret');
+  await writeFile(join(source,'build.tgz'),'artifact');
+  const record = await installExtension(source,{root});
+  await assert.rejects(readFile(join(record.directory,'.env')), {code:'ENOENT'});
+  await assert.rejects(readFile(join(record.directory,'build.tgz')), {code:'ENOENT'});
+  await writeFile(join(record.directory,'index.js'), 'throw Error("tampered")');
+  await assert.rejects(new ExtensionHost({root}).load(), /integrity mismatch/);
+});
+test('concurrent installs retain both registrations', async () => {
+  const a = await fixture('export function activate() {}'), b = await fixture('export function activate() {}');
+  const pkg = JSON.parse(await readFile(join(b.source,'package.json'),'utf8')); pkg.lylaExtension.id = 'second'; await writeFile(join(b.source,'package.json'),JSON.stringify(pkg));
+  await Promise.all([installExtension(a.source,{root:a.root}),installExtension(b.source,{root:a.root})]);
+  assert.deepEqual((await listExtensions(a.root)).map(e => e.id).sort(), ['fixture','second']);
+});
+test('runtime context has identity and delegated capabilities and object disposal', async () => {
+  const {root,source} = await fixture(`export function activate(host) { host.registerCommand('fixture', () => host.getContext()); return {dispose() { host.report('disposed'); }}; }`);
+  await installExtension(source,{root}); const output = [];
+  const host = await new ExtensionHost({root,getContext:()=>({provider:{id:'codex'}}),report:x=>output.push(x)}).load();
+  const ctx = await host.dispatch('fixture'); assert.match(ctx.toolFingerprint,/^[a-f0-9]{64}$/); assert.equal(ctx.harnessVersion,'0.1.0'); assert.equal(ctx.capabilities.injectionScope,'backend-turn');
+  await host.dispose(); assert.deepEqual(output,['disposed']);
+});

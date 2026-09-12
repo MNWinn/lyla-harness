@@ -12,9 +12,13 @@ untrusted inputs. Hooks do not expand tool permissions.
 
 An unsupported contract is rejected before importing code. Entry points must stay
 inside the package. Export `async function activate(host)` (or default), optionally
-returning an async disposal function. Installed npm code must be prebuilt; install
+returning an async disposal function or `{dispose()}`. Installed npm code must be prebuilt; install
 scripts are disabled. Local packages are copied into a snapshot, excluding `.git`,
-`node_modules`, and `.lyla`; zero-dependency packages need no download. Package
+`node_modules`, `.lyla`, `.env*`, `secrets`, `.DS_Store`, and archive/key files.
+Local symlinks are rejected; snapshots are bounded to 20,000 entries and 128 MiB.
+A package `files` array is honored as literal relative files/directories; glob
+patterns are rejected for local installation. Package metadata, README and LICENSE
+are included. Sources cannot contain their installation directory; zero-dependency packages need no download. Package
 runtime dependencies require an npm installation or a self-contained build.
 
 ## Host API
@@ -35,6 +39,8 @@ runtime dependencies require an npm installation or a self-contained build.
   for command artifacts.
 - `getContext()`: immutable snapshot containing `cwd`, optional `sessionId`,
   `journalPath`, `provider: {id, model, reasoning, baseUrl}`, and tool names.
+  `harnessVersion`, `toolFingerprint` (SHA-256 of tool implementation), and
+  `capabilities` identify direct-request or delegated-turn injection and telemetry.
 - `runtime`: `Agent`, `createProvider`, `createTools`, `Session`, `loadContext`.
 - `report(text)`: write command output.
 
@@ -53,7 +59,7 @@ callers own persistence when not using the extension host.
 ## Lifecycle
 
 ```sh
-lyla install local:/absolute/package/path
+lyla install local /absolute/package/path
 lyla install npm:@owner/package@0.1.0
 lyla extensions list
 lyla extensions disable example
@@ -67,7 +73,10 @@ Installation enables extension code; it never approves its generated content.
 Registry changes take effect in the next Lyla process (or new session). Local
 updates copy a fresh snapshot. Npm installations use a dedicated directory and
 lockfile, with exact resolved package version recorded. Failed updates leave the
-previous registration intact. Disable/removal preserve storage and package
+previous registration intact. Registry mutations use an exclusive lock; contention
+retries briefly and fails clearly. Each registration records SHA-256 integrity of
+the complete installed snapshot, including dependency files and npm lockfiles.
+Loading verifies integrity before importing code; tampered packages require reinstall. Disable/removal preserve storage and package
 snapshots; no evidence is implicitly deleted. Old snapshots also preserve modules
 used by existing processes. Data is under `LYLA_CONFIG_DIR/extensions` (normally
 `~/.config/lyla/extensions`). Back up that directory before manual cleanup.
