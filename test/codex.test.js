@@ -16,6 +16,7 @@ if (args[0] === 'login') {
 }
 let input = ''; for await (const chunk of process.stdin) input += chunk;
 if (!args.includes('--sandbox') || !args.includes('workspace-write') || !args.includes('--ignore-user-config')) process.exit(9);
+if (${JSON.stringify(mode)} === 'reasoning' && !args.includes('model_reasoning_effort="high"')) process.exit(8);
 if (${JSON.stringify(mode)} === 'hang') await new Promise(() => { setInterval(() => {}, 1000); });
 console.log(JSON.stringify({type: 'item.completed', item: {type: 'agent_message', text: 'Codex fixture result'}}));
 console.log(JSON.stringify({type: ${JSON.stringify(mode === 'failure' ? 'turn.failed' : 'turn.completed')}, usage: {input_tokens: 10, output_tokens: 3}}));
@@ -69,4 +70,10 @@ test('cancellation terminates the backend process', async t => {
   } });
   const result = await agent.run('Hello', { signal: abort.signal });
   assert.equal(result.status, 'cancelled');
+});
+
+test('Codex receives the selected reasoning effort', async t => {
+  const cwd = await fixture(t, 'reasoning');
+  const result = await new CodexAgent({ provider: { id: 'codex', model: 'gpt-6-astra', reasoning: 'high' }, cwd }).run('Hello');
+  assert.equal(result.status, 'completed');
 });

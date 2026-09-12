@@ -22,12 +22,12 @@ function tokens(usage, input, output) {
   if (!usage) return undefined;
   return { inputTokens: Number.isFinite(usage[input]) ? usage[input] : 0, outputTokens: Number.isFinite(usage[output]) ? usage[output] : 0 };
 }
-export function createProvider({ provider, model, baseUrl, apiKey, maxTokens = 4096, timeoutMs = 120000 } = {}) {
+export function createProvider({ provider, model, baseUrl, apiKey, reasoning, maxTokens = 4096, timeoutMs = 120000 } = {}) {
   requireValue(['demo', 'openai', 'anthropic', 'openai-compatible'].includes(provider), 'Unknown provider; choose demo, openai, anthropic, or openai-compatible');
   requireValue(typeof model === 'string' && model.trim(), 'A model is required');
   requireValue(Number.isInteger(maxTokens) && maxTokens > 0, 'maxTokens must be a positive integer');
   requireValue(Number.isInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 2147483647, 'timeoutMs must be a positive bounded integer');
-  if (provider === 'demo') return { id: provider, model, async complete({ signal }) {
+  if (provider === 'demo') return { id: provider, model, reasoning, async complete({ signal }) {
     signal?.throwIfAborted();
     return { message: { role: 'assistant', content: 'Lyla is running in offline demo mode. Select a provider and model to work on your codebase.' }, finishReason: 'stop', usage: { inputTokens: 0, outputTokens: 0 } };
   } };
@@ -61,7 +61,7 @@ export function createProvider({ provider, model, baseUrl, apiKey, maxTokens = 4
       throw new Error('Provider request failed; check connection and configuration');
     }
   }
-  return { id: provider, model, async complete({ system = '', messages = [], tools = [], signal }) {
+  return { id: provider, model, reasoning, async complete({ system = '', messages = [], tools = [], signal }) {
     // Reasoning-only truncated turns have nothing portable to replay.
     messages = messages.filter(m => m.role !== 'assistant' || native(m) || m.content?.trim() || m.toolCalls?.length);
     // Foreign call IDs may use a different vendor's alphabet or length. Rewrite
@@ -77,7 +77,7 @@ export function createProvider({ provider, model, baseUrl, apiKey, maxTokens = 4
         if (m.role === 'assistant' && native(m)) return native(m);
         return [...(m.content ? [{ role: m.role, content: m.content }] : []), ...(m.toolCalls || []).map(t => ({ type: 'function_call', call_id: callId(t.id), name: t.name, arguments: JSON.stringify(t.arguments) }))];
       });
-      const data = await post({ model, instructions: system, input, store: false, include: ['reasoning.encrypted_content'], max_output_tokens: maxTokens, tools: tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false })) }, signal);
+      const data = await post({ model, ...(reasoning ? { reasoning: { effort: reasoning } } : {}), instructions: system, input, store: false, include: ['reasoning.encrypted_content'], max_output_tokens: maxTokens, tools: tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false })) }, signal);
       requireValue(Array.isArray(data.output) && ['completed', 'incomplete'].includes(data.status));
       let content = ''; const calls = [];
       for (const item of data.output) {

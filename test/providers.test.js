@@ -142,3 +142,9 @@ test('Reasoning-only truncated history is omitted when native state is unavailab
     assert.equal(sent.some(m => m.role === 'assistant' || m.type === 'reasoning'), false);
   }
 });
+
+test('OpenAI sends selected reasoning effort in the actual request', async t => {
+  const f = await fixture(t, [{ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }] }]);
+  await createProvider({ provider: 'openai', model: 'gpt-6-astra', apiKey: 'test', reasoning: 'high', ...f }).complete(request);
+  assert.deepEqual(f.requests[0].body.reasoning, { effort: 'high' });
+});

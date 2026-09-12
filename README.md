@@ -206,3 +206,24 @@ and promotes only evidence-backed procedures. See [the design](docs/design.md).
 Offline tests cover Codex subprocess behavior, protocol translation against local HTTP fixtures, tool
 execution, cancellation, session recovery, and the CLI. Live authenticated
 provider/model interoperability must be verified with your chosen account.
+
+### Interactive composer
+
+Run `lyla` for a framed input area, labeled conversation turns, and a model/status
+footer. The conversation remains in your terminal's normal scrollback.
+
+- **Enter** sends; **Alt+Enter** inserts a newline (shown as ↵ in the composer).
+- **Shift+Tab** cycles reasoning effort and the frame color on supported models.
+  Astra offers low, medium, high, xhigh, and max. Known GPT-5 models expose the
+  shared low/medium/high choices. Other models keep their provider default.
+- **Left/Right**, **Home/End**, and **Backspace/Delete** edit the draft;
+  **Up/Down** recall submitted inputs.
+- **Esc/Ctrl+C** cancels an active turn. At the prompt it clears a draft, or
+  exits if the draft is empty.
+
+Reasoning choices apply to the next submitted turn through Codex's
+`model_reasoning_effort` setting or OpenAI's `reasoning.effort` field. Used choices
+are journaled and restored when resuming a session. The initial `default` label
+means no effort override. Anthropic and custom endpoints do not yet expose the
+shortcut. `NO_COLOR` disables color without hiding the reasoning label.
+Pasted newlines do not send the prompt; press Enter after pasting.

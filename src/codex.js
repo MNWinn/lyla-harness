@@ -70,6 +70,7 @@ export class CodexAgent {
       await emit({ type: 'backend_start', backend: 'codex-cli', sandbox: 'workspace-write' });
       signal?.throwIfAborted();
       const args = ['exec', '--json', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-c', 'approval_policy="never"', '-C', this.cwd];
+      if (this.provider.reasoning) args.push('-c', `model_reasoning_effort=${JSON.stringify(this.provider.reasoning)}`);
       if (this.provider.model !== 'default') args.push('--model', this.provider.model);
       args.push('-');
       child = spawn(binary(), args, { cwd: this.cwd, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });

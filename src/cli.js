@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { createInterface } from 'node:readline';
+import { TerminalChat } from './terminal.js';
+import { reasoningLevels } from './reasoning.js';
 import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -112,15 +113,18 @@ export async function main(argv = process.argv.slice(2)) {
   let controller;
   let rl;
   let currentBaseUrl;
+  let reasoning;
+  const output = text => rl ? rl.log(text.replace(/\n$/, '')) : process.stderr.write(text);
   const display = event => {
     if (options.json) { process.stdout.write(`${JSON.stringify(event)}\n`); return; }
     if (event.type === 'message' && event.message.role === 'assistant' && event.message.content) {
-      process.stdout.write(`${event.message.content}\n`);
+      if (rl) rl.log(`\nLyla\n${event.message.content}\n`);
+      else process.stdout.write(`${event.message.content}\n`);
     }
-    if (event.type === 'tool_start') process.stderr.write(`  → ${event.name ?? event.toolCall?.name ?? event.call?.name ?? 'tool'}\n`);
+    if (event.type === 'tool_start') output(`  → ${event.name ?? event.toolCall?.name ?? event.call?.name ?? 'tool'}\n`);
   };
   const sink = async event => display(await session.append(event));
-  const makeProvider = (provider, model, baseUrl) => provider === 'codex' ? { id: 'codex', model } : createProvider({ provider, model, baseUrl });
+  const makeProvider = (provider, model, baseUrl) => provider === 'codex' ? { id: 'codex', model, reasoning } : createProvider({ provider, model, baseUrl, reasoning });
   const makeAgent = (provider, messages) => new (provider.id === 'codex' ? CodexAgent : Agent)({ provider, tools: createTools(), system: session.metadata.system, cwd, messages, maxSteps: options.maxSteps, onEvent: sink });
 
   async function initialize(resume) {
@@ -134,6 +138,8 @@ export async function main(argv = process.argv.slice(2)) {
     const model = options.demo ? 'demo' : options.model ?? lastProvider?.model;
     if (!providerName || !model) throw new Error('Choose --provider and --model, or use --demo for an offline smoke test. See --help.');
     currentBaseUrl = options.baseUrl ?? (providerName === lastProvider?.provider ? lastProvider.baseUrl : undefined);
+    const savedReasoning = session?.events.findLast(e => ['reasoning_change', 'provider_change'].includes(e.type));
+    if (resume) reasoning = savedReasoning?.type === 'reasoning_change' && reasoningLevels(providerName, model).includes(savedReasoning.reasoning) ? savedReasoning.reasoning : undefined;
     const provider = makeProvider(providerName, model, currentBaseUrl);
     if (!session) session = await Session.create(directory, { cwd, provider: provider.id, model: provider.model, baseUrl: currentBaseUrl, system: context.system });
     else {
@@ -142,21 +148,29 @@ export async function main(argv = process.argv.slice(2)) {
         await sink({ type: 'provider_change', provider: provider.id, model: provider.model, baseUrl: currentBaseUrl });
       }
     }
+    if (!resume && reasoning) await sink({ type: 'reasoning_change', reasoning });
     agent = makeAgent(provider, session.messages);
     if (options.json) display({ type: 'session', id: session.id, file: session.file, provider: provider.id, model: provider.model });
-    else process.stderr.write(`Lyla · ${provider.id}/${provider.model}\nSession ${session.id}\n`);
+    else output(`Lyla · ${provider.id}/${provider.model}\nSession ${session.id}\n`);
   }
 
   async function run(prompt) {
     if (!prompt.trim()) throw new Error('Prompt cannot be empty.');
+    const levels = reasoningLevels(agent.provider.id, agent.provider.model);
+    if (reasoning && !levels.includes(reasoning)) reasoning = undefined;
+    if (reasoning !== agent.provider.reasoning) {
+      await sink({ type: 'reasoning_change', reasoning: reasoning ?? 'default' });
+      agent = makeAgent(makeProvider(agent.provider.id, agent.provider.model, currentBaseUrl), agent.messages);
+    }
     controller = new AbortController();
+    rl?.render();
     try {
       const result = await agent.run(prompt, { signal: controller.signal });
       if (result.status !== 'completed') {
-        process.stderr.write(`Turn ${result.status}${result.error ? `: ${result.error}` : ''}.\n`);
+        output(`Turn ${result.status}${result.error ? `: ${result.error}` : ''}.\n`);
       }
       return result;
-    } finally { controller = undefined; }
+    } finally { controller = undefined; rl?.render(); }
   }
 
   const interrupt = () => {
@@ -179,31 +193,39 @@ export async function main(argv = process.argv.slice(2)) {
       if (result.status !== 'completed') process.exitCode = result.status === 'cancelled' ? 130 : 1;
       return;
     }
-    process.stderr.write('Type /help for commands. Tools run locally with your permissions.\n');
-    rl = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
-    rl.on('SIGINT', interrupt);
-    rl.setPrompt('lyla › ');
-    rl.prompt();
-    for await (const line of rl) {
+    output('Type /help for commands. Tools run locally with your permissions.\n');
+    rl = new TerminalChat({
+      status: () => ({ model: `${agent.provider.id}/${agent.provider.model}`, reasoning: reasoning ?? 'default', busy: Boolean(controller) }),
+      onInterrupt: interrupt,
+      onCycle: () => {
+        const levels = reasoningLevels(agent.provider.id, agent.provider.model);
+        if (!levels.length) { output('Reasoning selection is unavailable for this model.\n'); return; }
+        reasoning = levels[(levels.indexOf(reasoning) + 1) % levels.length];
+      }
+    });
+    while (true) {
+      const line = await rl.read();
+      if (line === null) break;
       const text = line.trim();
       try {
         if (text === '/exit' || text === '/quit') break;
-        if (text === '/help') process.stderr.write(HELP);
-        else if (text === '/session') process.stderr.write(`${session.id}\n${session.file}\n`);
+        if (text === '/help') output(HELP);
+        else if (text === '/session') output(`${session.id}\n${session.file}\n`);
         else if (text === '/login') {
           // Release readline's raw-mode ownership while Codex runs its login flow.
           rl.pause();
-          process.stdin.setRawMode?.(false);
+
           try {
             await loginCodex();
             const model = ['openai', 'codex'].includes(agent.provider.id) ? agent.provider.model : 'default';
             await saveConfig({ provider: 'codex', model });
             await sink({ type: 'provider_change', provider: 'codex', model });
+            reasoning = undefined;
             agent = makeAgent({ id: 'codex', model }, agent.messages);
             options.provider = 'codex'; options.model = model; options.demo = false;
             options.baseUrl = undefined; currentBaseUrl = undefined;
-            process.stderr.write(`Using Codex/${model} with ChatGPT sign-in.\n`);
-          } finally { process.stdin.setRawMode?.(true); rl.resume(); }
+            output(`Using Codex/${model} with ChatGPT sign-in.\n`);
+          } finally { rl.resume(); }
         }
         else if (text === '/new') {
           options.provider = agent.provider.id;
@@ -216,6 +238,7 @@ export async function main(argv = process.argv.slice(2)) {
           const parts = text.split(/\s+/);
           if (parts.length < 3 || parts.length > 4) throw new Error('Usage: /model PROVIDER MODEL [BASE_URL]');
           const baseUrl = parts[3] ?? (parts[1] === agent.provider.id ? currentBaseUrl : undefined);
+          reasoning = undefined;
           const provider = makeProvider(parts[1], parts[2], baseUrl);
           await sink({ type: 'provider_change', provider: provider.id, model: provider.model, baseUrl });
           agent = makeAgent(provider, agent.messages);
@@ -224,17 +247,17 @@ export async function main(argv = process.argv.slice(2)) {
           options.provider = provider.id;
           options.model = provider.model;
           options.baseUrl = baseUrl;
-          process.stderr.write(`Using ${provider.id}/${provider.model}.\n`);
+          output(`Using ${provider.id}/${provider.model}.\n`);
         } else if (text.startsWith('/feedback ')) {
           const match = /^\/feedback\s+(accepted|rejected|correction)(?:\s+([\s\S]*))?$/.exec(text);
           if (!match) throw new Error('Usage: /feedback accepted|rejected|correction [note]');
           const event = await session.feedback(match[1], match[2] ?? '');
           if (options.json) display(event);
-          else process.stderr.write('Feedback recorded. It has not been turned into a rule.\n');
+          else output('Feedback recorded. It has not been turned into a rule.\n');
         } else if (text.startsWith('/')) throw new Error('Unknown command. Use /help.');
-        else if (text) await run(text);
-      } catch (error) { process.stderr.write(`${error.message}\n`); }
-      rl.prompt();
+        else if (text) { rl.log(`\nYou\n${text}\n`); await run(text); }
+      } catch (error) { output(`${error.message}\n`); }
+      rl.render();
     }
   } finally {
     process.removeListener('SIGINT', interrupt);
